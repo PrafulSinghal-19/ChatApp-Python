@@ -1,4 +1,6 @@
 import socket
+import rsa
+from rsa import PublicKey
 from threading import Thread, Lock
 from datetime import datetime
 from typing import List, Tuple
@@ -7,26 +9,34 @@ from typing import List, Tuple
 HOST = '127.0.0.1'
 PORT = 9090
 
-def broadcast_msg(msg: str, clients: List[Tuple[socket.socket, str]], send_lock: Lock):
-    msg = msg.encode('UTF-8')
+# public and private key of server
+public_key, private_key = rsa.newkeys(1024)
+
+def broadcast_msg(msg: str, clients: List[Tuple[socket.socket, str, PublicKey]], send_lock: Lock):
     with send_lock:
         for client in clients:
             try:
-                client[0].send(msg)
+                client[0].send(rsa.encrypt(msg.encode('UTF-8'), client[2]))
             except:
                 pass
 
-def handle_client(client: socket.socket, clients: List[Tuple[socket.socket, str]], clients_lock: Lock, send_lock: Lock):
+def handle_client(client: socket.socket, clients: List[Tuple[socket.socket, str, PublicKey]], clients_lock: Lock, send_lock: Lock):
     try:
-        client_nickname = client.recv(1024).decode('UTF-8')
+        # send the server public key to client
+        client.send(public_key.save_pkcs1('PEM'))
+        # recv the client public key
+        public_key_partner = rsa.PublicKey.load_pkcs1(client.recv(1024))
+        # recv the client nickname
+        client_nickname = rsa.decrypt(client.recv(1024), private_key).decode('UTF-8')
+
         with clients_lock:
-            clients.append((client, client_nickname))
+            clients.append((client, client_nickname, public_key_partner))
         
         recv_msg = f'*** {client_nickname} joined the chat ***'
         broadcast_msg(recv_msg, clients, send_lock)
 
         while True:
-            recv_msg = client.recv(1024).decode('UTF-8')
+            recv_msg = rsa.decrypt(client.recv(1024), private_key).decode('UTF-8')
             if recv_msg:
                 recv_msg = f'{datetime.now().strftime("%c")} ({client_nickname}) - {recv_msg}' 
                 broadcast_msg(recv_msg, clients, send_lock)
@@ -43,6 +53,7 @@ def handle_client(client: socket.socket, clients: List[Tuple[socket.socket, str]
         broadcast_msg(msg, clients, send_lock)
 
 def handle_connection_req(server: socket.socket):
+    # clients have socket object, client name and the public key of client
     clients = []
     clients_lock = Lock()
     send_lock = Lock()
